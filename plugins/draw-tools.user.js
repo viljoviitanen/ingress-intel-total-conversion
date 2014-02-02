@@ -259,6 +259,7 @@ window.plugin.drawTools.manualOpt = function() {
            + '<a onclick="window.plugin.drawTools.optCopy();">Copy/Export Drawn Items</a>'
            + '<a onclick="window.plugin.drawTools.optPaste();return false;">Paste/Import Drawn Items</a>'
            + '<a onclick="window.plugin.drawTools.optReset();return false;">Reset Drawn Items</a>'
+           + '<a onclick="window.plugin.drawTools.optSync();return false;">Sync Server</a>'
            + '</div>';
 
   dialog({
@@ -332,6 +333,182 @@ window.plugin.drawTools.optReset = function() {
     window.plugin.drawTools.optAlert('Reset Successful. ');
   }
 }
+
+//XXX TODO make server configurable
+window.SYNCSERVER="http://drawtools-sync.appspot.com/"
+
+window.plugin.drawTools.optSync = function() {
+    if (typeof android !== 'undefined' && android && android.shareString) {
+        android.shareString(localStorage['plugin-draw-tools-layer']);
+    } else {
+      dialog({
+        html: '<button onclick="window.open(\''+SYNCSERVER+'/login\')">Login at Sync Server</button><button onclick="window.plugin.drawTools.SyncCreate()">Create New Drawing</button><button onclick="window.plugin.drawTools.SyncList()">Get List of Drawings</button><div id=drawtools_list></div><div id=drawtools_item></div>',
+        width: 600,
+        dialogClass: 'ui-dialog-drawtoolsSet-copy',
+        title: 'Draw Tools Sync'
+        });
+    }
+}
+
+window.plugin.drawTools.SyncCreate = function() {
+  localStorage['plugin-draw-tools-synckey']='new'
+  $('#drawtools_item').html('Name: <input id=drawtools_name value="New Drawing"><br>Shared with: <input id=drawtools_shared value="[]"><br><button onclick="window.plugin.drawTools.SyncSave()">Save</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+}
+
+window.plugin.drawTools.SyncDel = function () {
+  name=$('#drawtools_name').val()
+  key=localStorage['plugin-draw-tools-synckey']
+  if (!confirm("Really delete " + window.plugin.drawTools.escapehtml(name) + "?")) return
+  $.ajax({
+    dataType: "jsonp",
+    url: SYNCSERVER+'/delete',
+    data: {'key':key},
+    xhrFields: { withCredentials: true },
+    crossDomain: true,
+    success: function(data) {
+    if(data.error) {
+       alert("Could not delete: "+data.error)
+       return
+    }
+    if(!data.key) {
+       alert("Could not delete")
+       return
+    }
+
+    alert("delete successful")
+    //reload
+    delete localStorage['plugin-draw-tools-synckey']
+    delete localStorage['plugin-draw-tools-syncname']
+    window.plugin.drawTools.SyncList()
+    }
+  })
+}
+
+window.plugin.drawTools.SyncSave = function() {
+  key=localStorage['plugin-draw-tools-synckey']
+  name=$('#drawtools_name').val()
+  window.plugin.drawTools.save();
+  content=localStorage['plugin-draw-tools-layer']
+  shared=$('#drawtools_shared').val()
+  $.ajax({
+    dataType: "jsonp",
+    url: SYNCSERVER+'/sync',
+    data: {'key':key,'name':name,'content':content,'shared':shared},
+    xhrFields: { withCredentials: true },
+    crossDomain: true,
+    success: function(data) {
+    if(data.error) {
+       alert("Could not sync data: "+data.error)
+       return
+    }
+    if(!data.content) {
+       alert("Could not sync data.")
+       return
+    }
+    if(!data.key) {
+       alert("Server did not return the key. What?!")
+       return
+    }
+
+    // XXX in distant future, check that server returned the same content
+    // we put in. if not, someone else modified it betweem saves.
+    // provide some options for resolving the conflict.
+    alert("save successful")
+    // save the key received from the server, in case this was a new drawing
+    localStorage['plugin-draw-tools-synckey'] = data.key
+    }
+  })
+}
+
+window.plugin.drawTools.SyncLoad = function(key) {
+  if (!confirm("Merge loaded drawing (ok) or overwrite (cancel)?")) {
+    delete localStorage['plugin-draw-tools-layer'];
+    window.plugin.drawTools.drawnItems.clearLayers();
+    window.plugin.drawTools.load();
+  }
+  $.ajax({
+    dataType: "jsonp",
+    url: SYNCSERVER+'/load',
+    data: {'key':key },
+    xhrFields: { withCredentials: true },
+    crossDomain: true,
+    success: function(data) {
+      if(data.error) {
+         alert("Could not load data: "+data.error)
+         return
+      }
+      if(!data.content) {
+         alert("Could not load data.")
+         return
+      }
+      if (!data.name) data.name="(unnamed)"
+    
+      $('#drawtools_item').html('Name: <input id=drawtools_name value="'+window.plugin.drawTools.escapehtml(data.name)+'"><br>Shared with: <input id=drawtools_shared><br><button onclick="window.plugin.drawTools.SyncSave()">Save</button><button onclick="window.plugin.drawTools.SyncDel()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+      $('#drawtools_shared').val(JSON.stringify(data.shared))
+      localStorage['plugin-draw-tools-syncshared']=data.shared
+      localStorage['plugin-draw-tools-syncname']=data.name
+      localStorage['plugin-draw-tools-synckey']=key
+      window.plugin.drawTools.import(data.content)
+    }
+  })
+}
+
+window.plugin.drawTools.SyncList = function() {
+  $.ajax({
+    dataType: "jsonp",
+    url: SYNCSERVER+'/list',
+    xhrFields: { withCredentials: true },
+    crossDomain: true,
+    success: function(data) {
+    if(data.error) {
+       alert("Could not load data: "+data.error)
+       return
+    }
+    if(!data.own) {
+       alert("Could not load data.")
+       return
+    }
+    own=data.own
+    shared=data.shared
+    s="My drawings:<br>"
+    for (i = 0; i < own.length; i++) {
+      name=own[i].name
+      if (!name) name="(unnamed)"
+      s+='<a href="javascript:window.plugin.drawTools.SyncLoad('+own[i].key+')">' + name + '</a><br>'
+    }
+    s+="Shared drawings:<br>"
+    for (i = 0; i < shared.length; i++) {
+      name=shared[i].name
+      if (!name) name="(unnamed)"
+      s+='<a href="javascript:window.plugin.drawTools.SyncLoad('+shared[i].key+')">' + name + '</a><br>'
+    }
+    $('#drawtools_list').html(s)
+    if(!localStorage['plugin-draw-tools-syncname']) return
+    $('#drawtools_item').html('Name: <input id=drawtools_name value="'+window.plugin.drawTools.escapehtml(localStorage['plugin-draw-tools-syncname'])+'"><br>Shared with: <input id=drawtools_shared><br><button onclick="window.plugin.drawTools.SyncSave()">Save</button><button onclick="window.plugin.drawTools.SyncDel()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+    $('#drawtools_shared').val(JSON.stringify(data.shared))
+    } 
+  })
+}
+
+window.plugin.drawTools.SyncInit = function() {
+    shared=localStorage['plugin-draw-tools-syncshared']
+    name=localStorage['plugin-draw-tools-syncname']
+    key=localStorage['plugin-draw-tools-synckey']
+    $('#drawtools_item').html('Name: <input id=drawtools_name value="'+window.plugin.drawTools.escapehtml(data.name)+'"><br>Shared with: <input id=drawtools_shared><br><button onclick="window.plugin.drawTools.SyncSave()">Save</button><button onclick="window.plugin.drawTools.SyncDel()">Delete</button> <p> Note: shared emails format is a json array: <tt>["email.address@example.com","another.address@example.com"]</tt>')
+    $('#drawtools_shared').val(JSON.stringify(shared))
+}
+
+window.plugin.drawTools.escapehtml = function(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+
+
 
 window.plugin.drawTools.boot = function() {
   window.plugin.drawTools.setOptions();
